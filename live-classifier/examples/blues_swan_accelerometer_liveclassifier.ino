@@ -35,15 +35,17 @@ static bool debug_nn = false; // Set this to true to see e.g. features generated
 */
 void setup()
 {
-    // put your setup code here, to run once:
+    delay(2500);
+    
     Serial.begin(115200);
-    Serial.println("Edge Impulse Inferencing Demo");
+    ei_printf("Edge Impulse Inferencing Demo\n");
+    Wire.begin();
 
     if (accel.begin() == false) {
-      Serial.println("Accelerometer not connected. Please check connections and read the hookup guide.");
+      ei_printf("Accelerometer not connected. Please check connections and read the hookup guide.");
     }
     else {
-        ei_printf("Accelerometer initialized!\r\n");
+      ei_printf("Accelerometer initialized!\r\n");
     }
 
     if (EI_CLASSIFIER_RAW_SAMPLES_PER_FRAME != 3) {
@@ -77,54 +79,67 @@ void ei_printf(const char *format, ...) {
 */
 void loop()
 {
+    if (!accel.available())
+      return;
+ 
     ei_printf("\nStarting inferencing in 2 seconds...\n");
 
     delay(2000);
 
-    if (accel.available()) {
-      ei_printf("Sampling...\n");
+    ei_printf("Sampling...\n");
 
-      // Allocate a buffer here for the values we'll read from the IMU
-      float buffer[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE] = { 0 };
+    // Allocate a buffer here for the values we'll read from the IMU
+    static int16_t rawReadingBuf[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE] = { 0 };
+    static float readingBuf[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE];
 
-      for (size_t ix = 0; ix < EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE; ix += 3) {
-          // Determine the next tick (and then sleep later)
-          uint64_t next_tick = micros() + (EI_CLASSIFIER_INTERVAL_MS * 1000);
+    for (size_t ix = 0; ix < EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE; ix += 3) {
+        // Determine the next tick (and then sleep later)
+        uint64_t next_tick = micros() + (EI_CLASSIFIER_INTERVAL_MS * 1000);
 
-          buffer[ix] = accel.getX();
-          buffer[ix + 1] = accel.getY();
-          buffer[ix + 2] = accel.getZ();
+        rawReadingBuf[ix] = accel.getX();
+        rawReadingBuf[ix + 1] = accel.getY();
+        rawReadingBuf[ix + 2] = accel.getZ();
 
-          delayMicroseconds(next_tick - micros());
-      }
+        delayMicroseconds(next_tick - micros());
+    }
 
-      // Turn the raw buffer in a signal which we can the classify
-      signal_t signal;
-      int err = numpy::signal_from_buffer(buffer, EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE, &signal);
-      if (err != 0) {
-          ei_printf("Failed to create signal from buffer (%d)\n", err);
-          return;
-      }
+    // Turn the raw buffer in a signal which we can the classify
+    numpy::int16_to_float(rawReadingBuf, readingBuf, EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE);
+    signal_t signal;
+    int err = numpy::signal_from_buffer(readingBuf, EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE, &signal);
+    if (err != 0) {
+        ei_printf("Failed to create signal from buffer (%d)\n", err);
+        return;
+    }
 
-      // Run the classifier
-      ei_impulse_result_t result = { 0 };
+    // Run the classifier
+    ei_impulse_result_t result = { 0 };
 
-      err = run_classifier(&signal, &result, debug_nn);
-      if (err != EI_IMPULSE_OK) {
-          ei_printf("ERR: Failed to run classifier (%d)\n", err);
-          return;
-      }
+    err = run_classifier(&signal, &result, debug_nn);
+    if (err != EI_IMPULSE_OK) {
+        ei_printf("ERR: Failed to run classifier (%d)\n", err);
+        return;
+    }
 
-      // print the predictions
-      ei_printf("Predictions ");
-      ei_printf("(DSP: %d ms., Classification: %d ms., Anomaly: %d ms.)",
-          result.timing.dsp, result.timing.classification, result.timing.anomaly);
-      ei_printf(": \n");
-      for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
-          ei_printf("    %s: %.5f\n", result.classification[ix].label, result.classification[ix].value);
-      }
-  #if EI_CLASSIFIER_HAS_ANOMALY == 1
-      ei_printf("    anomaly score: %.3f\n", result.anomaly);
-  #endif
-  }
+    ei_printf("(DSP: %d ms., Classification: %d ms., Anomaly: %d ms.)\n",
+        result.timing.dsp, result.timing.classification, result.timing.anomaly);
+    uint8_t predictionLabel = 0;
+    for(size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+        Serial.print("    ");
+        Serial.print(result.classification[ix].label);
+        Serial.print(": ");
+        Serial.println(result.classification[ix].value);
+
+        if(result.classification[ix].value > result.classification[predictionLabel].value)
+            predictionLabel = ix;
+    }
+
+    // print the predictions
+    Serial.print("\nPrediction: ");
+    Serial.println(result.classification[predictionLabel].label);
+#if EI_CLASSIFIER_HAS_ANOMALY == 1
+    Serial.print("    ");
+    Serial.print("anomaly score: ");
+    Serial.print(result.anomaly);
+#endif
 }
